@@ -391,134 +391,286 @@ sudo sshd -T | grep -E 'permitrootlogin|passwordauthentication|pubkeyauthenticat
 
 ---
 
-## Step 4: Install and Configure Fail2Ban
+## Step 4: Install and Configure CrowdSec
 
 ### What We're Doing
-Installing Fail2Ban to automatically ban IPs with repeated failed login attempts.
+Installing CrowdSec, a modern collaborative security engine that detects and blocks threats using crowdsourced threat intelligence.
 
 ### Why It Matters
-- Prevents brute force attacks
-- Automatically blocks malicious IPs
-- Reduces server load from attack attempts
+- Prevents brute force attacks with smarter detection
+- Shares and receives threat intelligence from global community
+- More efficient than traditional IPS (written in Go)
+- Protects multiple services simultaneously
+- Better false positive handling
+
+### What is CrowdSec?
+
+CrowdSec consists of:
+- **Agent**: Parses logs and detects attacks
+- **Local API**: Manages decisions (bans)
+- **Bouncers**: Enforce bans (we'll use firewall bouncer)
+- **Central API**: Crowdsourced threat intelligence (optional)
 
 ### Installation
 
 ```bash
-# 4.1: Install Fail2Ban
-sudo dnf install -y fail2ban fail2ban-firewalld
+# 4.1: Add CrowdSec repository
+curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.rpm.sh | sudo bash
+
+# Expected Output: Repository configuration messages
+```
+
+```bash
+# 4.2: Install CrowdSec
+sudo dnf install -y crowdsec
 
 # Expected Output: Package installation confirmation
 ```
 
 ```bash
-# 4.2: Enable and start Fail2Ban
-sudo systemctl enable --now fail2ban
+# 4.3: Enable and start CrowdSec
+sudo systemctl enable --now crowdsec
+
+# Expected Output: Created symlink message
 ```
 
-**Expected Output**: Created symlink message
+### Install Firewall Bouncer
+
+The bouncer enforces bans in firewalld:
+
+```bash
+# 4.4: Install firewall bouncer
+sudo dnf install -y crowdsec-firewall-bouncer-iptables
+
+# Expected Output: Package installation confirmation
+```
+
+```bash
+# 4.5: Enable and start bouncer
+sudo systemctl enable --now crowdsec-firewall-bouncer
+
+# Expected Output: Service started
+```
 
 ### Configuration
 
+CrowdSec works out of the box with good defaults, but let's verify configuration:
+
 ```bash
-# 4.3: Create local configuration
-sudo nano /etc/fail2ban/jail.local
+# 4.6: Check which collections are installed
+sudo cscli collections list
+
+# Shows installed detection scenarios
+# Should include: crowdsecurity/linux, crowdsecurity/sshd
 ```
 
-**Add this content**:
+```bash
+# 4.7: Install additional useful collections
+sudo cscli collections install crowdsecurity/linux
+sudo cscli collections install crowdsecurity/sshd
+sudo cscli collections install crowdsecurity/http-cve
 
-```ini
-[DEFAULT]
-# Ban for 1 hour
-bantime = 3600
+# Expected Output: Collections installed messages
+```
 
-# Check for 5 failures
-maxretry = 5
+```bash
+# 4.8: Reload CrowdSec to apply collections
+sudo systemctl reload crowdsec
+```
 
-# Within 10 minutes
-findtime = 600
+### Enroll in Community (Optional but Recommended)
 
-# Use firewalld
-banaction = firewallcmd-rich-rules
+This enables sharing threat intelligence:
 
-# Email notifications (optional, configure later)
-# destemail = rainreport.dev@proton.me
-# sendername = Fail2Ban
-# action = %(action_mwl)s
+```bash
+# 4.9: Enroll in CrowdSec community
+sudo cscli console enroll XXXXXXXX
 
-[sshd]
-enabled = true
-port = 22
-logpath = /var/log/secure
-maxretry = 3
+# You'll get an enrollment key from: https://app.crowdsec.net
+# Sign up (free), get your key, and run the command above
+# For now, you can skip this and enroll later
+```
+
+**📝 Note**: Community enrollment is optional but recommended. It allows:
+- Sharing blocklists with global community
+- Receiving curated threat intelligence
+- Web dashboard to monitor your instance
+
+### Configure Bouncer
+
+```bash
+# 4.10: Check bouncer is registered
+sudo cscli bouncers list
+
+# Should show: firewall bouncer with status
+```
+
+```bash
+# 4.11: Verify bouncer configuration
+sudo cat /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml | grep -E "mode:|log_level:"
+
+# Should show mode: nftables or iptables
+# log_level: info
+```
+
+**For Fedora with firewalld**, verify it's using the right mode:
+
+```bash
+# 4.12: Edit bouncer config if needed
+sudo nano /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+```
+
+**Ensure these settings**:
+```yaml
+mode: nftables  # or iptables
+deny_action: DROP
+deny_log: true
 ```
 
 **Save**: `Ctrl+X`, `Y`, `Enter`
 
 ```bash
-# 4.4: Restart Fail2Ban to apply config
-sudo systemctl restart fail2ban
+# 4.13: Restart bouncer after config changes
+sudo systemctl restart crowdsec-firewall-bouncer
 ```
 
 ### Verification
 
 ```bash
-# 4.5: Check Fail2Ban status
-sudo systemctl status fail2ban
+# 4.14: Check CrowdSec status
+sudo systemctl status crowdsec
 
 # Should show: Active: active (running)
 ```
 
 ```bash
-# 4.6: Check SSH jail is active
-sudo fail2ban-client status
+# 4.15: Check bouncer status
+sudo systemctl status crowdsec-firewall-bouncer
 
-# Should show: sshd in jail list
+# Should show: Active: active (running)
 ```
 
 ```bash
-# 4.7: Check SSH jail details
-sudo fail2ban-client status sshd
+# 4.16: View active decisions (bans)
+sudo cscli decisions list
 
-# Should show:
-# - Currently banned: 0 (initially)
-# - Total banned: 0 (initially)
+# Initially empty (no bans yet)
 ```
 
 ```bash
-# 4.8: Monitor Fail2Ban logs
-sudo tail -f /var/log/fail2ban.log
+# 4.17: Check detected scenarios
+sudo cscli scenarios list
 
-# Press Ctrl+C to stop monitoring
-# Should see: "Jail 'sshd' started"
-```
-
-### Test Fail2Ban (Optional)
-
-**From another machine** (or use a VM):
-
-```bash
-# Try to SSH with wrong password multiple times
-# (This will fail since we disabled password auth, but Fail2Ban monitors attempts)
-
-# After 3 failed attempts, IP should be banned
+# Should show enabled scenarios for SSH, Linux, etc.
 ```
 
 ```bash
-# On server, check banned IPs
-sudo fail2ban-client status sshd
+# 4.18: View CrowdSec metrics
+sudo cscli metrics
 
-# Should show the test IP in banned list
+# Shows:
+# - Acquisition metrics (log sources)
+# - Parser metrics
+# - Scenario metrics
 ```
 
 ```bash
-# Unban test IP
-sudo fail2ban-client set sshd unbanip TEST_IP_ADDRESS
+# 4.19: Monitor CrowdSec logs
+sudo journalctl -u crowdsec -f
+
+# Press Ctrl+C to stop
+# Should see logs being parsed
 ```
+
+### Test CrowdSec (Optional)
+
+**Simulate an attack from another machine**:
+
+```bash
+# From another machine, try failed SSH attempts
+# (Will fail since we use key auth, but CrowdSec will detect)
+
+# After several attempts, check if IP is banned
+```
+
+```bash
+# 4.20: On server, check for alerts
+sudo cscli alerts list
+
+# Should show detected attack scenarios
+```
+
+```bash
+# 4.21: Check active bans
+sudo cscli decisions list
+
+# Should show banned IP with reason and duration
+```
+
+```bash
+# 4.22: Manual ban (for testing)
+sudo cscli decisions add --ip 192.0.2.1 --duration 4h --reason "Test ban"
+
+# Verify ban
+sudo cscli decisions list
+```
+
+```bash
+# 4.23: Remove test ban
+sudo cscli decisions delete --ip 192.0.2.1
+```
+
+### CrowdSec Hub (Browse Available Protection)
+
+```bash
+# 4.24: List available collections
+sudo cscli collections list -a
+
+# Shows all available collections from CrowdSec Hub
+```
+
+```bash
+# 4.25: Install additional protection (examples)
+# For Caddy (if using):
+sudo cscli collections install crowdsecurity/caddy
+
+# For general HTTP protection:
+sudo cscli collections install crowdsecurity/base-http-scenarios
+
+# Reload after installing
+sudo systemctl reload crowdsec
+```
+
+### View Banned IPs in Firewall
+
+```bash
+# 4.26: Check firewall rules created by bouncer
+sudo nft list ruleset | grep -A 5 crowdsec
+
+# Or for iptables:
+sudo iptables -L crowdsec-chain 2>/dev/null || echo "Using nftables"
+```
+
+### Understanding CrowdSec vs Fail2Ban
+
+**Key Differences**:
+- **Smarter detection**: CrowdSec uses scenarios, not just regex
+- **Community intelligence**: Shares and receives threat data
+- **Multiple services**: One agent protects all services
+- **Better performance**: Go vs Python
+- **Modern architecture**: Agent + bouncers design
+
+**Ban Duration**:
+- Default: 4 hours (configurable per scenario)
+- Can be permanent for known bad actors
+- Community-verified IPs get longer bans
 
 ✅ **Success Criteria**:
-- Fail2Ban running
-- SSH jail enabled
-- Can detect and ban IPs with failed attempts
+- CrowdSec service running
+- Firewall bouncer running
+- Collections installed and active
+- Can detect and ban malicious IPs
+- Metrics showing log acquisition
 
 ---
 
@@ -1236,9 +1388,10 @@ sudo grep -q "^PermitRootLogin no" /etc/ssh/sshd_config && echo "✓ Root login 
 sudo grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config && echo "✓ Password auth disabled" || echo "✗ Password auth enabled"
 echo ""
 
-echo "4. Fail2Ban:"
-systemctl is-active --quiet fail2ban && echo "✓ Fail2Ban active" || echo "✗ Fail2Ban inactive"
-sudo fail2ban-client status sshd > /dev/null 2>&1 && echo "✓ SSH jail enabled" || echo "✗ SSH jail disabled"
+echo "4. CrowdSec:"
+systemctl is-active --quiet crowdsec && echo "✓ CrowdSec active" || echo "✗ CrowdSec inactive"
+systemctl is-active --quiet crowdsec-firewall-bouncer && echo "✓ Firewall bouncer active" || echo "✗ Firewall bouncer inactive"
+sudo cscli scenarios list | grep -q "enabled" && echo "✓ Scenarios configured" || echo "✗ No scenarios enabled"
 echo ""
 
 echo "5. SELinux:"
@@ -1307,7 +1460,7 @@ sudo firewall-cmd --zone=services --list-all
 
 ```bash
 # Check all security services
-sudo systemctl status firewalld fail2ban auditd | grep Active
+sudo systemctl status firewalld crowdsec crowdsec-firewall-bouncer auditd | grep Active
 
 # All should show: Active: active (running)
 ```
@@ -1323,7 +1476,7 @@ sudo systemctl status firewalld fail2ban auditd | grep Active
 ✅ **Network Security**:
 - Firewall configured with restrictive rules
 - Only essential ports open
-- Fail2Ban protecting against brute force
+- CrowdSec protecting against attacks with crowdsourced intelligence
 
 ✅ **Access Control**:
 - SSH hardened (key-only, no root)
@@ -1410,7 +1563,8 @@ sudo semodule -i mypolicy.pp
 - Audit logs collected
 
 ### Weekly
-- Review Fail2Ban bans
+- Review CrowdSec alerts: `sudo cscli alerts list`
+- Check banned IPs: `sudo cscli decisions list`
 - Check system logs
 - Review Lynis warnings
 
