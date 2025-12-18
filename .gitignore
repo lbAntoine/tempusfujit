@@ -1,0 +1,43 @@
+# Secrets and sensitive files
+.env
+.env.*
+*.key
+*.pem
+*.cert
+*.crt
+secrets/
+*.secret
+
+# Backup files
+*.backup
+*.bak
+*~
+
+# Logs
+*.log
+logs/
+
+# OS specific
+.DS_Store
+Thumbs.db
+.directory
+
+# Editor specific
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Node modules (if you add any scripts)
+node_modules/
+
+# Python (if you add any scripts)
+__pycache__/
+*.py[cod]
+venv/
