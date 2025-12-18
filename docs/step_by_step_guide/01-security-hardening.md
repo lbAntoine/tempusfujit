@@ -127,12 +127,15 @@ sudo firewall-cmd --permanent --new-zone=services
 **Expected Output**: success
 
 ```bash
-# 2.4: Add your server's IP range to services zone
-# Replace 0.0.0.0/0 with specific IP range if you know it
+# 2.4: Add source IP range to services zone
+# 0.0.0.0/0 means "allow connections from any IP" (recommended for public server)
+# This doesn't make things insecure - the firewall still only allows specific services
 sudo firewall-cmd --permanent --zone=services --add-source=0.0.0.0/0
 ```
 
 **Expected Output**: success
+
+**📝 Note**: `0.0.0.0/0` means accept connections FROM anywhere. Security comes from limiting which services are exposed (only SSH, HTTP, HTTPS), not from limiting source IPs. We'll restrict SSH to VPN-only after setting up Tailscale.
 
 ```bash
 # 2.5: Allow essential services
@@ -519,15 +522,18 @@ sudo fail2ban-client set sshd unbanip TEST_IP_ADDRESS
 
 ---
 
-## Step 5: Verify SELinux
+## Step 5: Enable and Configure SELinux
 
 ### What We're Doing
-Verifying SELinux is enabled and in enforcing mode.
+Enabling SELinux in enforcing mode with proper file contexts to avoid SSH lockouts.
 
 ### Why It Matters
 - Mandatory access control
 - Prevents privilege escalation
 - Limits damage from compromised services
+
+### ⚠️ CRITICAL WARNING
+**Enabling SELinux incorrectly can lock you out of SSH!** Follow these steps carefully and **fix file contexts BEFORE rebooting**.
 
 ### Check SELinux Status
 
@@ -535,69 +541,219 @@ Verifying SELinux is enabled and in enforcing mode.
 # 5.1: Check SELinux status
 sestatus
 
-# Expected output should show:
-# SELinux status: enabled
-# Current mode: enforcing
+# Note the current mode: enforcing, permissive, or disabled
 ```
 
 ```bash
 # 5.2: Check current mode
 getenforce
 
-# Should output: Enforcing
+# Outputs: Enforcing, Permissive, or Disabled
 ```
+
+### If SELinux is Already Enforcing
+
+**Skip to Verification section** - you're already set!
 
 ### If SELinux is Disabled or Permissive
 
-```bash
-# 5.3: Check config file
-cat /etc/selinux/config | grep ^SELINUX=
+#### Step 5A: Fix SSH File Contexts FIRST (Prevents Lockout!)
 
-# Should show: SELINUX=enforcing
+```bash
+# 5.3: Fix SELinux contexts for SSH (CRITICAL - prevents lockout)
+sudo restorecon -R -v /root/.ssh
+sudo restorecon -R -v /home/*/.ssh
+sudo restorecon -R -v /etc/ssh
+sudo restorecon -v /usr/sbin/sshd
+
+# Expected Output: Shows files being relabeled
 ```
 
-If not enforcing:
+```bash
+# 5.4: Verify SSH authorized_keys has correct context
+ls -lZ ~/.ssh/authorized_keys
+
+# Should show: unconfined_u:object_r:ssh_home_t:s0
+# If not, run: sudo restorecon -v ~/.ssh/authorized_keys
+```
+
+#### Step 5B: Enable SELinux (Without Reboot First)
 
 ```bash
-# 5.4: Edit config
+# 5.5: Set SELinux to permissive mode temporarily
+sudo setenforce 0
+
+# This allows us to test without breaking things
+```
+
+```bash
+# 5.6: Edit SELinux config for permanent change
 sudo nano /etc/selinux/config
 ```
 
-**Set**:
+**Set these values**:
 ```
 SELINUX=enforcing
 SELINUXTYPE=targeted
 ```
 
-**Save and reboot**:
+**Save**: `Ctrl+X`, `Y`, `Enter`
+
+#### Step 5C: Test SSH Still Works
+
 ```bash
+# 5.7: Check for any SELinux denials that would block SSH
+sudo ausearch -m avc -ts recent | grep sshd
+
+# If denials found, address them before continuing
+```
+
+**⚠️ CRITICAL TEST - Do this in a NEW terminal**:
+```bash
+# 5.8: From local machine, test SSH connection
+ssh rainreport@YOUR_SERVER_IP
+
+# Should connect successfully
+# Leave this connection open!
+```
+
+If SSH test succeeds, continue. **If it fails, DO NOT REBOOT!** See troubleshooting below.
+
+#### Step 5D: Relabel Filesystem (Fixes All Contexts)
+
+```bash
+# 5.9: Schedule full relabeling on next boot (safer approach)
+sudo touch /.autorelabel
+
+# This creates a flag file that triggers full relabeling on reboot
+```
+
+**📝 Note**: This is the **safest approach**. On next boot, the system will automatically fix ALL SELinux contexts. It takes 5-10 minutes.
+
+#### Step 5E: Enable SELinux Enforcing Mode
+
+**Option 1: Enable now (after relabel is scheduled)**
+```bash
+# 5.10a: Enable enforcing mode
+sudo setenforce 1
+
+# Verify
+getenforce
+# Should output: Enforcing
+```
+
+```bash
+# 5.11a: Test SSH again (CRITICAL - in new terminal)
+ssh rainreport@YOUR_SERVER_IP
+
+# Should still work
+```
+
+If SSH works, you can proceed to reboot when ready.
+
+**Option 2: Enable after reboot (more cautious)**
+
+Skip step 5.10a and just reboot. SELinux will be enforcing after reboot completes.
+
+#### Step 5F: Reboot to Complete Relabeling
+
+```bash
+# 5.12: Reboot server
 sudo reboot
 ```
 
-**After reboot, verify**:
+**Expected**: Server will take **5-10 minutes** to reboot while relabeling filesystem. Be patient!
+
+**After reboot**:
 ```bash
-sestatus
-# Should now show: enforcing
+# 5.13: Verify relabeling completed
+# The /.autorelabel file should be gone
+ls -la /.autorelabel
+
+# Should show: No such file or directory (good!)
 ```
 
 ### Verification
 
 ```bash
-# 5.5: Verify SELinux is protecting services
+# 5.14: Verify SELinux is enforcing
+getenforce
+
+# Should output: Enforcing
+```
+
+```bash
+# 5.15: Check SELinux status
+sestatus
+
+# Should show:
+# SELinux status: enabled
+# Current mode: enforcing
+```
+
+```bash
+# 5.16: Verify SSH is working
+# From local machine
+ssh rainreport@YOUR_SERVER_IP
+
+# Should connect successfully
+```
+
+```bash
+# 5.17: Verify SELinux is protecting services
 sudo ps -eZ | grep sshd
 
 # Should show SELinux contexts like: system_u:system_r:sshd_t
 ```
 
 ```bash
-# 5.6: Check for recent denials
-sudo ausearch -m avc -ts recent
+# 5.18: Check for any denials (should be none or very few)
+sudo ausearch -m avc -ts today
 
-# If nothing found, that's good
-# If denials found, they may need policy adjustments later
+# Review any denials, most should be harmless
 ```
 
-✅ **Success Criteria**: SELinux enabled and enforcing
+✅ **Success Criteria**:
+- SELinux enabled and enforcing
+- SSH works from new connection
+- No critical SELinux denials
+- File contexts correct
+
+### Troubleshooting SELinux SSH Lockout
+
+**If SSH fails after enabling SELinux**:
+
+1. **Use console access** (physical, IPMI, or hosting provider's web console)
+
+2. **Check SELinux denials**:
+   ```bash
+   sudo ausearch -m avc -ts recent | grep sshd
+   ```
+
+3. **Quick fix - Set to permissive temporarily**:
+   ```bash
+   sudo setenforce 0
+   # SSH should work now
+   ```
+
+4. **Fix SSH contexts**:
+   ```bash
+   sudo restorecon -R -v ~/.ssh
+   sudo restorecon -R -v /etc/ssh
+   ```
+
+5. **Re-enable enforcing and test**:
+   ```bash
+   sudo setenforce 1
+   # Test SSH from another terminal
+   ```
+
+6. **If still broken - Full relabel**:
+   ```bash
+   sudo touch /.autorelabel
+   sudo reboot
+   # Wait 10 minutes for relabeling to complete
+   ```
 
 ---
 
@@ -1195,6 +1351,23 @@ sudo systemctl status firewalld fail2ban auditd | grep Active
 ---
 
 ## Troubleshooting
+
+### Failed Units Warning on Login
+
+If you see "Failed Units: systemd-binfmt.service" when logging in:
+
+```bash
+# This service is usually not needed (it's for running non-native binaries)
+# Safest solution: mask the service
+sudo systemctl mask systemd-binfmt.service
+
+# Verify it's masked
+sudo systemctl status systemd-binfmt.service
+
+# Should show: Loaded: masked
+```
+
+The warning will disappear on next login.
 
 ### Can't SSH After Changes
 
