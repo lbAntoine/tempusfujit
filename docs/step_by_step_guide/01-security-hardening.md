@@ -1,8 +1,8 @@
 # Step-by-Step Security Hardening Guide
 
-**Estimated Time**: 2-3 hours
 **Difficulty**: Intermediate
 **Prerequisites**:
+
 - Fedora 43 Server with SSH key authentication already working
 - User with sudo privileges (fedora)
 
@@ -111,6 +111,7 @@ echo "SSH still working!"
 ```
 
 **⚠️ CRITICAL TEST**: Open a **NEW terminal** and test SSH:
+
 ```bash
 ssh fedora@YOUR_SERVER_IP
 ```
@@ -197,13 +198,16 @@ sudo systemctl status sshd | grep Active
 ### ⚠️ CRITICAL TEST
 
 **In a NEW terminal** (don't close your current one):
+
 ```bash
 ssh fedora@YOUR_SERVER_IP
 ```
 
 **Did it work?**
+
 - ✅ **YES**: Continue
 - ❌ **NO**: Use your existing terminal to restore backup:
+
   ```bash
   sudo rm /etc/ssh/sshd_config.d/99-hardening.conf
   sudo systemctl restart sshd
@@ -212,9 +216,14 @@ ssh fedora@YOUR_SERVER_IP
 
 ---
 
-## Step 4: SELinux (Fix Contexts First)
+## Step 4: SELinux (OPTIONAL - Skip for Now)
 
-**Problem before**: SELinux contexts not set correctly, breaks SSH on reboot.
+**Note**: SELinux provides additional security through mandatory access controls, but it adds complexity and can break SSH if misconfigured. **You can safely skip this step** and come back to it later once you're comfortable with the other security measures and VPN setup.
+
+<details>
+<summary>Click here if you want to enable SELinux (Advanced)</summary>
+
+**Problem**: SELinux contexts not set correctly can break SSH on reboot.
 
 ### Check Current Status
 
@@ -256,13 +265,16 @@ getenforce
 ### Test SSH with SELinux Enforcing
 
 **In a NEW terminal**:
+
 ```bash
 ssh fedora@YOUR_SERVER_IP
 ```
 
 **Did it work?**
+
 - ✅ **YES**: SELinux properly configured
 - ❌ **NO**: Revert immediately:
+
   ```bash
   sudo setenforce 0
   sudo restorecon -R -v ~/.ssh
@@ -282,6 +294,10 @@ grep ^SELINUX= /etc/selinux/config
 
 ✅ **Success**: SELinux enabled, SSH still works
 
+</details>
+
+**Skipping SELinux?** Just continue to Step 5 below.
+
 ---
 
 ## Step 5: Install CrowdSec
@@ -291,11 +307,8 @@ grep ^SELINUX= /etc/selinux/config
 ### Installation
 
 ```bash
-# Add repository
-curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.rpm.sh | sudo bash
-
-# Install CrowdSec
-sudo dnf install -y crowdsec
+# Install CrowdSec (official installer)
+curl -s https://install.crowdsec.net | sudo bash
 
 # Install firewall bouncer
 sudo dnf install -y crowdsec-firewall-bouncer-iptables
@@ -528,8 +541,8 @@ echo "CrowdSec:"
 systemctl is-active crowdsec && echo "✓ CrowdSec active" || echo "✗ Inactive"
 systemctl is-active crowdsec-firewall-bouncer && echo "✓ Bouncer active" || echo "✗ Inactive"
 echo ""
-echo "SELinux:"
-[ "$(getenforce)" = "Enforcing" ] && echo "✓ SELinux enforcing" || echo "✗ Not enforcing"
+echo "SELinux (optional):"
+[ "$(getenforce)" = "Enforcing" ] && echo "✓ SELinux enforcing" || echo "○ SELinux not enforcing (skipped)"
 echo ""
 echo "Auditd:"
 systemctl is-active auditd && echo "✓ Auditd active" || echo "✗ Inactive"
@@ -567,19 +580,6 @@ sudo systemctl restart sshd
 # Try connecting again
 ```
 
-### SELinux Blocking SSH
-
-```bash
-# Temporarily disable
-sudo setenforce 0
-
-# Fix contexts
-sudo restorecon -R -v ~/.ssh
-
-# Re-enable
-sudo setenforce 1
-```
-
 ### CrowdSec Banned Your IP
 
 ```bash
@@ -604,6 +604,19 @@ sudo firewall-cmd --permanent --add-service=ssh
 sudo firewall-cmd --reload
 ```
 
+### SELinux Blocking SSH (If You Enabled It)
+
+```bash
+# Temporarily disable
+sudo setenforce 0
+
+# Fix contexts
+sudo restorecon -R -v ~/.ssh
+
+# Re-enable
+sudo setenforce 1
+```
+
 ---
 
 ## Summary
@@ -611,10 +624,10 @@ sudo firewall-cmd --reload
 ✅ **System**: Updated, automatic updates enabled
 ✅ **Firewall**: Configured, SSH allowed
 ✅ **SSH**: Hardened, still working
-✅ **SELinux**: Enforcing with correct contexts
 ✅ **CrowdSec**: Protecting, your IP whitelisted
 ✅ **Monitoring**: Audit logging enabled
 ✅ **Tools**: Security tools installed
+○ **SELinux**: Optional (you can enable later if desired)
 
 **Most Important**: You tested SSH in a new terminal after each critical change!
 
@@ -624,18 +637,19 @@ sudo firewall-cmd --reload
 
 1. Review security check: `~/security-check.sh`
 2. Optional: Reboot to test everything survives restart
-3. Proceed to VPN setup guide (next)
+3. Proceed to VPN setup guide (next) - learn to manage VPN and non-VPN access
 
 **Before rebooting (optional test)**:
-```bash
-# Fix any remaining SELinux contexts
-sudo touch /.autorelabel
 
-# Reboot
+```bash
+# Reboot to verify all services start correctly
 sudo reboot
 
-# Wait 10 minutes for relabeling
+# Wait 2-3 minutes for system to restart
 # Then test SSH again
+ssh fedora@YOUR_SERVER_IP
 ```
 
 Only reboot if you want to test. It's not required - everything is already working!
+
+**What you'll learn in the VPN guide**: How to set up Tailscale VPN for secure remote access, configure firewall rules to manage VPN vs non-VPN traffic, and control which services are accessible from the public internet vs only through the VPN.
